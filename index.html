@@ -90,6 +90,7 @@
   .pk .tag { margin-left: 0; }
   .empty-pick { color: var(--muted); text-align: center; }
 
+  .keepnote { color: var(--mid); font-size: 12.5px; margin: 12px 2px 0; }
   .note { color: var(--muted); font-size: 12.5px; margin-top: 26px; text-align: center; }
 
   .modal-bg { position: fixed; inset: 0; background: rgba(31,30,27,.35); display: none; align-items: center; justify-content: center; padding: 20px; z-index: 10; }
@@ -111,6 +112,7 @@
     <span class="rule"><b>9990</b>intval 하위 3% (올림, 동점은 no 순)</span>
     <span class="rule"><b>9998</b>오픈응답(TS·TL) 불량 패턴</span>
     <span class="rule">둘 다 해당되면 9990</span>
+    <span class="rule">나머지는 기존 qdel 유지</span>
   </div>
 
   <label class="drop" id="drop">
@@ -234,6 +236,16 @@ function sheetRows(ws) {
   return XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null, blankrows: true });
 }
 function sheetBase(ws) { return ws && ws["!ref"] ? XLSX.utils.decode_range(ws["!ref"]).s : { r: 0, c: 0 }; }
+const hasVal = v => v !== null && v !== undefined && String(v).trim() !== "";
+// 열(col)의 기존 값이 텍스트인지: 값 있는 셀만 세고, 없으면 시트 전체 다수 형식
+function qdelIsText(data, col) {
+  let t = 0, n = 0, at = 0, an = 0;
+  for (let d = 1; d < data.length; d++) for (let c = 0; c < (data[d] || []).length; c++) {
+    const v = data[d][c]; if (!hasVal(v)) continue;
+    const isT = typeof v === "string"; if (c === col) isT ? t++ : n++; isT ? at++ : an++;
+  }
+  return t + n ? t >= n : at >= an;
+}
 const isBlankRow = r => !r || !r.some(v => v !== null && String(v).trim() !== "");
 // 같은 이름 열이 여러 개여도 섞이지 않게 "이름+몇 번째"로 키를 만듦
 function headerKeys(h) { const seen = {}; return h.map(c => { const k = c.trim().toLowerCase(); seen[k] = (seen[k] || 0) + 1; return k + "\u0001" + seen[k]; }); }
@@ -263,7 +275,7 @@ function analyze(wb, rawNames) {
       r.forEach((v, i) => { if (i < map.length) out[map[i]] = v; });
       rows.push(out); meta.push({ p: pi, r: base.r + d + 1 }); cnt++;
     }
-    parts.push({ name, n: cnt, map, baseC: base.c, hdrRow: base.r + 1 });
+    parts.push({ name, n: cnt, map, baseC: base.c, hdrRow: base.r + 1, qTxt: qdelIsText(data, colIndex(h, "qdel")) });
   }
   rows.forEach(r => { while (r.length < header.length) r.push(null); });
 
@@ -315,17 +327,19 @@ function analyze(wb, rawNames) {
       if (f === 9990) n9990++; if (f === 9998) n9998++;
       byRow.set(base.r + d + 1, f);
     }
-    pp = { name: ppName, qdelCol: base.c + jQdel, hdrRow: base.r + 1, byRow, matched, unmatched, n9990, n9998 };
+    pp = { name: ppName, qTxt: qdelIsText(data, jQdel), qdelCol: base.c + jQdel, hdrRow: base.r + 1, byRow, matched, unmatched, n9990, n9998 };
   }
 
   return { rawNames, parts, header, rows, meta, n, k, cutVal, badInt, iNo, iId, iInt, iQdel, openCols, lowList, badList, flag, pp,
-           n9990: flag.filter(f => f === 9990).length, n9998: flag.filter(f => f === 9998).length };
+           n9990: flag.filter(f => f === 9990).length, n9998: flag.filter(f => f === 9998).length,
+           kept: rows.filter((r, i) => flag[i] === null && hasVal(r[iQdel])).length,
+           over: rows.filter((r, i) => flag[i] !== null && hasVal(r[iQdel]) && String(r[iQdel]).trim() !== String(flag[i])).length };
 }
 
 // ── 화면 ──
 function render(file, buf, R) {
   window._last = { buf, R };   // 점검용
-  const none = R.n - R.n9990 - R.n9998;
+  const none = R.n - R.n9990 - R.n9998 - R.kept;
   const low = R.lowList.map(({ i, rank }) => {
     const r = R.rows[i];
     return `<tr><td class="num">${rank}</td><td class="num">${esc(r[R.iNo])}</td><td>${esc(r[R.iId])}</td><td class="num">${esc(r[R.iInt])}</td></tr>`;
@@ -337,7 +351,7 @@ function render(file, buf, R) {
   }).join("");
   const sheetList = R.parts.map(p => `<li>${esc(p.name)} <span class="tag">${p.n}명</span></li>`).join("")
     + (R.parts.length > 1 ? `<li>위 ${R.parts.length}개 시트를 합쳐서 판정했어요</li>` : "")
-    + (R.pp ? `<li>${esc(R.pp.name)} <span class="tag">id 매칭 ${R.pp.matched}명${R.pp.unmatched ? ` · 미매칭 ${R.pp.unmatched}명(선택 안 한 시트 응답자 등 → qdel 빈값)` : ""}</span></li>` : "")
+    + (R.pp ? `<li>${esc(R.pp.name)} <span class="tag">id 매칭 ${R.pp.matched}명${R.pp.unmatched ? ` · 미매칭 ${R.pp.unmatched}명(선택 안 한 시트 응답자 등 → 기존 qdel 유지)` : ""}</span></li>` : "")
     + `<li>오픈응답 변수 ${R.openCols.length}개 검사 <span class="tag">${esc(R.openCols.map(c => c[0]).join(", ")) || "없음"}</span></li>`
     + `<li>추가될 시트 <span class="tag new">${OUT_RAW}</span>${R.pp ? ` <span class="tag new">${OUT_PP}</span>` : ""}</li>`;
 
@@ -352,8 +366,9 @@ function render(file, buf, R) {
       <div class="stat"><div class="k">전체 응답자</div><div class="v">${R.n}<small>명</small></div></div>
       <div class="stat a"><div class="k">9990 · 응답시간 3%</div><div class="v">${R.n9990}<small>명</small></div></div>
       <div class="stat a"><div class="k">9998 · 불량응답</div><div class="v">${R.n9998}<small>명</small></div></div>
-      <div class="stat"><div class="k">표시 없음 (빈값)</div><div class="v">${none}<small>명</small></div></div>
+      <div class="stat"><div class="k">기존 qdel 값 유지</div><div class="v">${R.kept}<small>명</small></div></div>
     </div>
+    <p class="keepnote">이번 점검에 걸린 응답자만 qdel을 9990·9998로 바꾸고, 나머지는 원래 qdel 값을 그대로 둬요. 원래 비어 있던 ${none}명은 빈값 그대로예요.${R.over ? ` 기존 값이 있었는데 이번 점검으로 바뀐 응답자 ${R.over}명.` : ""}</p>
     <details open>
       <summary>응답시간 하위 3% <span class="cnt">${R.n}명 × 3% = ${(R.n*0.03).toFixed(2)} → 올림 ${R.k}명 · 기준 intval ≤ ${esc(R.cutVal)}</span></summary>
       ${low ? `<div class="tbl-wrap"><table><thead><tr><th>순위</th><th>no</th><th>id</th><th>intval</th></tr></thead><tbody>${low}</tbody></table></div>` : `<div class="empty">해당 없음</div>`}
@@ -406,14 +421,15 @@ function parseSheet(x) {
     views: pick(/<sheetViews>[\s\S]*?<\/sheetViews>/).replace(/\stabSelected="1"/g, ""),
     fmt: pick(/<sheetFormatPr\b[^>]*\/>/), cols: pick(/<cols>[\s\S]*?<\/cols>/), margins: pick(/<pageMargins\b[^>]*\/>/) };
 }
-function cellXml(cell, ref, newVal) {   // newVal: undefined=원본 그대로, null=빈값, 숫자=교체
+function cellXml(cell, ref, newVal, asText) {   // newVal: undefined=원본 그대로, null=빈값, 숫자=교체
   const a = cell ? dropAttr(cell.a, "r").replace(/\s\/$/, "") : "";
   if (newVal === undefined) {
     const inner = (cell.inner || "").replace(/<f\b[^>]*\/>|<f\b[^>]*>[\s\S]*?<\/f>/g, "");  // 수식은 계산된 값만 남김
     return inner ? `<c r="${ref}"${a}>${inner}</c>` : `<c r="${ref}"${a}/>`;
   }
   const s = cell && attr(cell.a, "s"); const sa = s ? ` s="${s}"` : "";
-  return newVal === null ? (sa ? `<c r="${ref}"${sa}/>` : "") : `<c r="${ref}"${sa}><v>${newVal}</v></c>`;
+  if (newVal === null) return sa ? `<c r="${ref}"${sa}/>` : "";
+  return asText ? `<c r="${ref}"${sa} t="inlineStr"><is><t>${newVal}</t></is></c>` : `<c r="${ref}"${sa}><v>${newVal}</v></c>`;
 }
 function rowXml(srcRow, rn, cellsXml) {
   const a = srcRow ? dropAttr(dropAttr(srcRow.a, "r"), "spans") : "";
@@ -425,6 +441,7 @@ function sheetDoc(T, body, lastCol, lastRow) {
 // rawdata(응답시간점검): 선택 시트들을 합쳐 셀 복사
 function buildRawXml(R, src) {
   const P = R.parts.map(p => src[p.name]), out = [];
+  const tm = R.parts.map(p => p.qTxt);
   // 헤더: 결과 열마다 그 열을 가진 첫 시트의 헤더 셀
   const hcells = [];
   for (let t = 0; t < R.header.length; t++) {
@@ -438,10 +455,10 @@ function buildRawXml(R, src) {
     let hasQ = false;
     if (srcRow) for (const [cn, cell] of srcRow.cells) {
       const t = p.map[cn - p.baseC]; if (t === undefined || t < 0) continue;
-      if (t === R.iQdel) { hasQ = true; cells.push([t, cellXml(cell, colName(t) + rn, R.flag[i])]); }
+      if (t === R.iQdel) { hasQ = true; cells.push([t, cellXml(cell, colName(t) + rn, R.flag[i] === null ? undefined : R.flag[i], tm[m.p])]); }
       else cells.push([t, cellXml(cell, colName(t) + rn)]);
     }
-    if (!hasQ && R.flag[i] !== null) cells.push([R.iQdel, cellXml(null, colName(R.iQdel) + rn, R.flag[i])]);
+    if (!hasQ && R.flag[i] !== null) cells.push([R.iQdel, cellXml(null, colName(R.iQdel) + rn, R.flag[i], tm[m.p])]);
     cells.sort((x, y) => x[0] - y[0]);
     out.push(rowXml(srcRow, rn, cells.map(c => c[1]).join("")));
   });
@@ -449,15 +466,16 @@ function buildRawXml(R, src) {
 }
 // PreprocessingData(응답시간점검): 원본 시트 그대로, 응답자 행의 qdel 셀만 교체
 function buildPpXml(pp, T) {
+  const tm = pp.qTxt;
   const out = []; let lastCol = 0, lastRow = 1;
   for (const [rn, row] of T.rows) {
     const repl = rn !== pp.hdrRow && pp.byRow.has(rn); const cells = []; let hasQ = false;
     for (const [cn, cell] of row.cells) {
       lastCol = Math.max(lastCol, cn);
-      if (repl && cn === pp.qdelCol) { hasQ = true; cells.push([cn, cellXml(cell, colName(cn) + rn, pp.byRow.get(rn))]); }
+      if (repl && cn === pp.qdelCol) { hasQ = true; cells.push([cn, cellXml(cell, colName(cn) + rn, pp.byRow.get(rn) === null ? undefined : pp.byRow.get(rn), tm)]); }
       else cells.push([cn, cellXml(cell, colName(cn) + rn)]);
     }
-    if (repl && !hasQ && pp.byRow.get(rn) !== null) cells.push([pp.qdelCol, cellXml(null, colName(pp.qdelCol) + rn, pp.byRow.get(rn))]);
+    if (repl && !hasQ && pp.byRow.get(rn) !== null) cells.push([pp.qdelCol, cellXml(null, colName(pp.qdelCol) + rn, pp.byRow.get(rn), tm)]);
     cells.sort((x, y) => x[0] - y[0]);
     out.push(rowXml(row, rn, cells.map(c => c[1]).join(""))); lastRow = Math.max(lastRow, rn);
   }
