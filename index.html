@@ -124,7 +124,7 @@
 
   <div id="out"></div>
 
-  <p class="note">원본 시트는 그대로 두고 <b>rawdata(응답시간점검)</b> 시트를 추가해요. PreprocessingData 시트가 있으면 <b>PreprocessingData(응답시간점검)</b>도 함께 추가해요.</p>
+  <p class="note">원본 시트는 그대로 두고 <b>rawdata(응답시간점검)</b> 시트를 맨 앞에 추가해요. PreprocessingData 시트가 있으면 <b>PreprocessingData(응답시간점검)</b>도 함께 추가해요.</p>
 </div>
 
 <div class="modal-bg" id="modal">
@@ -508,6 +508,7 @@ async function buildOutput(buf, R) {
   const rawXml = buildRawXml(R, src);
   const ppXml = R.pp ? buildPpXml(R.pp, await load(R.pp.name)) : null;
 
+  let added = 0;
   const add = (name, xml) => {
     let nm = name, k = 2; while (names.has(nm)) nm = `${name}_${k++}`; names.add(nm);
     const path = `worksheets/sheet${fileN}.xml`; fileN++;
@@ -519,13 +520,29 @@ async function buildOutput(buf, R) {
     const sh = wbXml.createElementNS(NS_MAIN, "sheet");
     sh.setAttribute("name", nm); sh.setAttribute("sheetId", String(++maxId));
     sh.setAttributeNS(NS_R, "r:id", rid);
-    sheetsEl.appendChild(sh);
+    sheetsEl.insertBefore(sh, existing[0] || null);   // 새 시트는 맨 앞 (추가 순서대로)
+    added++;
     const ov = ctXml.createElementNS(ctXml.documentElement.namespaceURI, "Override");
     ov.setAttribute("PartName", "/xl/" + path); ov.setAttribute("ContentType", CT_WS);
     ctXml.documentElement.appendChild(ov);
   };
-  add(OUT_RAW, rawXml);
+  // 새 rawdata 시트가 열릴 때 선택되도록
+  add(OUT_RAW, rawXml.replace(/<sheetView\b/, '<sheetView tabSelected="1"'));
   if (ppXml) add(OUT_PP, ppXml);
+
+  // 시트 순서가 밀린 만큼 위치 기반 참조 보정 + 첫 화면을 새 시트로
+  for (const dn of Array.from(wbXml.getElementsByTagNameNS(NS_MAIN, "definedName"))) {
+    const id = dn.getAttribute("localSheetId"); if (id !== null) dn.setAttribute("localSheetId", String(+id + added));
+  }
+  for (const wv of Array.from(wbXml.getElementsByTagNameNS(NS_MAIN, "workbookView"))) {
+    wv.setAttribute("activeTab", "0"); wv.removeAttribute("firstSheet");
+  }
+  // 원본 시트의 '선택됨' 표시만 해제 (여러 시트가 그룹 선택되는 것 방지, 값·서식 무관)
+  for (const sh of existing) {
+    const f = zip.file(pathOf(sh.getAttribute("name"))); if (!f) continue;
+    const x = await f.async("string");
+    if (/<sheetView\b[^>]*\stabSelected="1"/.test(x)) zip.file(f.name, x.replace(/(<sheetView\b[^>]*?)\stabSelected="1"/g, "$1"));
+  }
 
   zip.file("xl/workbook.xml", S.serializeToString(wbXml));
   zip.file("xl/_rels/workbook.xml.rels", S.serializeToString(relXml));
