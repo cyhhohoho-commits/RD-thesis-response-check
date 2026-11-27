@@ -110,6 +110,7 @@
 
   <div class="rules">
     <span class="rule"><b>9990</b>intval 하위 3% (올림, 동점은 no 순)</span>
+    <span class="rule"><b>9999</b>제외하고 3% 계산 · 판정 안 함</span>
     <span class="rule"><b>9998</b>오픈응답(TS·TL) 불량 패턴</span>
     <span class="rule">둘 다 해당되면 9990</span>
     <span class="rule">나머지는 기존 qdel 유지</span>
@@ -284,10 +285,14 @@ function analyze(wb, rawNames) {
   if (iId < 0) throw new UserError("RowData 시트에 id 변수가 없어요.", "id 없음");
   const openCols = header.map((h, i) => [h, i]).filter(([h]) => OPEN_RE.test(h));
 
-  const n = rows.length, k = ceil3pct(n);
+  const n = rows.length;
+  // 9999(척도 일자찍기 제외 샘플)는 분석에서 빼요: 3% 모수·판정 대상 모두 제외, qdel 9999 그대로 유지
+  const isEx = r => String(r[iQdel] ?? "").trim() === "9999";
+  const pool = rows.map((r, i) => i).filter(i => !isEx(rows[i]));
+  const nEx = n - pool.length, nUse = pool.length, k = ceil3pct(nUse);
   // 1) intval 하위 3%
-  const badInt = rows.filter(r => isNaN(toNum(r[iInt]))).length;
-  const order = rows.map((r, i) => i).sort((a, b) => {
+  const badInt = pool.filter(i => isNaN(toNum(rows[i][iInt]))).length;
+  const order = pool.slice().sort((a, b) => {
     const x = toNum(rows[a][iInt]), y = toNum(rows[b][iInt]);
     const xa = isNaN(x) ? Infinity : x, ya = isNaN(y) ? Infinity : y;
     if (xa !== ya) return xa - ya;
@@ -301,6 +306,7 @@ function analyze(wb, rawNames) {
   // 2) 불량 오픈응답
   const badList = [];
   rows.forEach((r, i) => {
+    if (isEx(r)) return;
     for (const [h, c] of openCols) {
       const v = r[c]; if (v === null || v === undefined) continue;
       const s = String(v).trim(); if (!s) continue;
@@ -330,7 +336,7 @@ function analyze(wb, rawNames) {
     pp = { name: ppName, qTxt: qdelIsText(data, jQdel), qdelCol: base.c + jQdel, hdrRow: base.r + 1, byRow, matched, unmatched, n9990, n9998 };
   }
 
-  return { rawNames, parts, header, rows, meta, n, k, cutVal, badInt, iNo, iId, iInt, iQdel, openCols, lowList, badList, flag, pp,
+  return { rawNames, parts, header, rows, meta, n, nEx, nUse, k, cutVal, badInt, iNo, iId, iInt, iQdel, openCols, lowList, badList, flag, pp,
            n9990: flag.filter(f => f === 9990).length, n9998: flag.filter(f => f === 9998).length,
            kept: rows.filter((r, i) => flag[i] === null && hasVal(r[iQdel])).length,
            over: rows.filter((r, i) => flag[i] !== null && hasVal(r[iQdel]) && String(r[iQdel]).trim() !== String(flag[i])).length };
@@ -363,14 +369,14 @@ function render(file, buf, R) {
       <ul class="sheets">${sheetList}</ul>
     </div>
     <div class="stats">
-      <div class="stat"><div class="k">전체 응답자</div><div class="v">${R.n}<small>명</small></div></div>
+      <div class="stat"><div class="k">전체 응답자</div><div class="v">${R.n}<small>명</small></div>${R.nEx ? `<div class="k">9999 제외 ${R.nEx}명 → 분석 ${R.nUse}명</div>` : ""}</div>
       <div class="stat a"><div class="k">9990 · 응답시간 3%</div><div class="v">${R.n9990}<small>명</small></div></div>
       <div class="stat a"><div class="k">9998 · 불량응답</div><div class="v">${R.n9998}<small>명</small></div></div>
       <div class="stat"><div class="k">기존 qdel 값 유지</div><div class="v">${R.kept}<small>명</small></div></div>
     </div>
     <p class="keepnote">이번 점검에 걸린 응답자만 qdel을 9990·9998로 바꾸고, 나머지는 원래 qdel 값을 그대로 둬요. 원래 비어 있던 ${none}명은 빈값 그대로예요.${R.over ? ` 기존 값이 있었는데 이번 점검으로 바뀐 응답자 ${R.over}명.` : ""}</p>
     <details open>
-      <summary>응답시간 하위 3% <span class="cnt">${R.n}명 × 3% = ${(R.n*0.03).toFixed(2)} → 올림 ${R.k}명 · 기준 intval ≤ ${esc(R.cutVal)}</span></summary>
+      <summary>응답시간 하위 3% <span class="cnt">${R.nEx ? `전체 ${R.n}명 − 9999 ${R.nEx}명 = ` : ""}${R.nUse}명 × 3% = ${(R.nUse*0.03).toFixed(2)} → 올림 ${R.k}명 · 기준 intval ≤ ${esc(R.cutVal)}</span></summary>
       ${low ? `<div class="tbl-wrap"><table><thead><tr><th>순위</th><th>no</th><th>id</th><th>intval</th></tr></thead><tbody>${low}</tbody></table></div>` : `<div class="empty">해당 없음</div>`}
     </details>
     <details open>
